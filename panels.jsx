@@ -125,14 +125,16 @@ function StatsStrip({ series }) {
 // ── Device info strip ─────────────────────────────────────
 function DeviceInfoStrip({ device, latest }) {
   const dp = dewPoint(latest.temp, latest.humidity);
+  const uptimeH = device.uptimeH || 0;
+  const rssi = device.rssi != null ? `${device.rssi} dBm` : '—';
   return (
     <div className="info-strip">
-      <div className="info-cell"><span className="k">Device</span><span className="v">{device.name}</span></div>
-      <div className="info-cell"><span className="k">Location</span><span className="v">{device.location}</span></div>
-      <div className="info-cell"><span className="k">MCU</span><span className="v">{device.mcu}</span></div>
-      <div className="info-cell"><span className="k">Firmware</span><span className="v">{device.firmware}</span></div>
-      <div className="info-cell"><span className="k">RSSI</span><span className="v ok">{device.rssi} dBm</span></div>
-      <div className="info-cell"><span className="k">Uptime</span><span className="v">{Math.floor(device.uptimeH/24)}d {device.uptimeH%24}h</span></div>
+      <div className="info-cell"><span className="k">Device</span><span className="v">{device.name || '—'}</span></div>
+      <div className="info-cell"><span className="k">Location</span><span className="v">{device.location || '—'}</span></div>
+      <div className="info-cell"><span className="k">MCU</span><span className="v">{device.mcu || '—'}</span></div>
+      <div className="info-cell"><span className="k">Firmware</span><span className="v">{device.firmware || '—'}</span></div>
+      <div className="info-cell"><span className="k">RSSI</span><span className="v ok">{rssi}</span></div>
+      <div className="info-cell"><span className="k">Uptime</span><span className="v">{Math.floor(uptimeH/24)}d {uptimeH%24}h</span></div>
       <div className="info-cell"><span className="k">Dew point</span><span className="v">{formatNum(dp)} °C</span></div>
     </div>
   );

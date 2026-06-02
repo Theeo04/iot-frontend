@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: iot-frontend
+  namespace: iot
+  labels:
+    app: iot-frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: iot-frontend
+  template:
+    metadata:
+      labels:
+        app: iot-frontend
+    spec:
+      containers:
+        - name: iot-frontend
+          # Replace <dockerhub-user> with the account configured in the GitHub
+          # Actions workflow. The image bundles the FastAPI backend and the
+          # static dashboard files.
+          image: docker.io/<dockerhub-user>/iot-frontend:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: POSTGRES_HOST
+              value: postgres
+            - name: POSTGRES_PORT
+              value: "5432"
+          envFrom:
+            - secretRef:
+                name: postgres-credentials
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi

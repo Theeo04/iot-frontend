@@ -1,0 +1,19 @@
+# Never commit real secret manifests; only *.example.yaml is checked in.
+*secret.yaml
+!*secret.example.yaml
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+env/
+.python-version
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp

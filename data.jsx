@@ -1,91 +1,57 @@
 /* ============================================================
-   Data layer — DHT22 simulated telemetry
-   DHT22 spec recap (for thesis context):
-     - Temperature: -40..80°C, ±0.5°C, 0.1°C resolution
-     - Humidity:    0..100% RH, ±2-5%, 0.1% resolution
-     - Sample rate: 0.5 Hz max (one read every 2s)
-   We simulate a server-room sensor sampled every 5 min.
+   Data layer — real DHT22 telemetry from the Postgres backend.
+
+   Endpoints (served by services/api):
+     GET /api/series?device=…&range=30d  → [{t, temp, humidity}]
+     GET /api/devices                    → [device records]
+     GET /api/alerts?limit=…             → [alert records]
+
+   The previous version generated 30 days of synthetic data in the
+   browser. We now fetch from the API. Helpers (clampSeries, stats,
+   formatNum, dewPoint, etc.) and config (THRESHOLDS, COMFORT_ZONES)
+   are unchanged — only the source of FULL_SERIES, DEVICES, ALERTS,
+   NOW has been swapped.
    ============================================================ */
 
-// Seeded RNG so the dashboard is deterministic between reloads.
-function mulberry32(seed) {
-  return function () {
-    seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
-    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
-    t = t + Math.imul(t ^ (t >>> 7), 61 | t) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
+const API_BASE = window.API_BASE || '';
 
-// Fix "now" so generated data is stable across renders.
-const NOW = new Date('2026-05-23T14:42:00');
+async function fetchJSON(path) {
+  const res = await fetch(`${API_BASE}${path}`, { headers: { Accept: 'application/json' } });
+  if (!res.ok) {
+    throw new Error(`${path} → ${res.status} ${res.statusText}`);
+  }
+  return res.json();
+}
 
 /**
- * Generate a long timeseries covering 30 days, 5-min cadence.
- * Returns array of { t (ms epoch), temp, humidity }.
+ * Fetch all data the dashboard needs and assign to window globals.
+ * Called once by bootstrap.jsx before ReactDOM.createRoot.
  */
-function generateSeries() {
-  const rng = mulberry32(42);
-  const stepMin = 5;
-  const stepMs = stepMin * 60 * 1000;
-  const totalMin = 30 * 24 * 60;
-  const n = Math.floor(totalMin / stepMin);
-  const out = [];
+async function loadData() {
+  const [series, devices, alerts] = await Promise.all([
+    fetchJSON('/api/series?range=30d'),
+    fetchJSON('/api/devices'),
+    fetchJSON('/api/alerts?limit=50'),
+  ]);
 
-  // Drift baselines for slow seasonality (cooler nights, warmer days)
-  let tempDrift = 0;
-  let humDrift = 0;
+  // NOW = timestamp of the most recent reading (fall back to wall-clock).
+  const nowMs = series.length ? series[series.length - 1].t : Date.now();
 
-  for (let i = 0; i < n; i++) {
-    const t = NOW.getTime() - (n - i) * stepMs;
-    const d = new Date(t);
-    const hour = d.getHours() + d.getMinutes() / 60;
-
-    // Diurnal cycle: cooler 03:00-06:00, warmer 14:00-17:00
-    const diurnal = Math.sin(((hour - 9) / 24) * 2 * Math.PI);
-
-    // Base temp ~ 22.4°C, swing ±1.2°C
-    let temp = 22.4 + diurnal * 1.2 + tempDrift;
-    // Humidity roughly inverse to temp + base 48%
-    let hum = 48 - diurnal * 4 + humDrift;
-
-    // Slow drift
-    tempDrift += (rng() - 0.5) * 0.04;
-    humDrift += (rng() - 0.5) * 0.15;
-    tempDrift = Math.max(-1.2, Math.min(1.2, tempDrift));
-    humDrift = Math.max(-3, Math.min(6, humDrift));
-
-    // Measurement noise (DHT22 ±0.1 res, ±0.5 acc)
-    temp += (rng() - 0.5) * 0.3;
-    hum += (rng() - 0.5) * 1.0;
-
-    // ── Humidity excursion in the last ~3 hours (drives the active alert).
-    // Targets ~74-76 %RH at "now" so the hero card lights up critical.
-    const minutesAgo = (NOW.getTime() - t) / 60000;
-    if (minutesAgo > 0 && minutesAgo < 180) {
-      const climb = Math.min(1, (180 - minutesAgo) / 90);
-      hum += 32 * climb;
-    }
-
-    // Small temp spike yesterday afternoon (HVAC blip)
-    const hoursAgo = (NOW.getTime() - t) / 3600000;
-    if (hoursAgo > 22 && hoursAgo < 24) {
-      temp += 1.6 * Math.exp(-Math.pow((hoursAgo - 23) / 0.4, 2));
-    }
-
-    out.push({
-      t,
-      temp: Math.round(temp * 10) / 10,
-      humidity: Math.round(hum * 10) / 10,
-    });
-  }
-  return out;
+  // The frontend's panels reference fields the schema doesn't have
+  // (location, mcu, firmware, rssi, etc.). The API returns "—" / null
+  // placeholders for those — we just pass them through.
+  window.FULL_SERIES = series;
+  window.DEVICES = devices.length ? devices : [{
+    id: 'none', name: 'No devices', location: '—',
+    status: 'pending',
+  }];
+  window.ALERTS = alerts;
+  window.NOW = new Date(nowMs);
 }
-
-const FULL_SERIES = generateSeries();
 
 // Helpers ──────────────────────────────────────────────────────
 function clampSeries(rangeKey) {
+  if (!FULL_SERIES.length) return [];
   const last = FULL_SERIES[FULL_SERIES.length - 1].t;
   const windows = {
     '24h': 24 * 60 * 60 * 1000,
@@ -117,6 +83,7 @@ function downsample(series, maxPoints) {
 }
 
 function stats(series, key) {
+  if (!series.length) return { min: 0, max: 0, avg: 0 };
   let min = Infinity, max = -Infinity, sum = 0;
   for (const p of series) {
     const v = p[key];
@@ -157,87 +124,28 @@ function formatDateTime(ts) {
   return `${formatDate(ts)} ${formatClock(ts)}`;
 }
 
-// Dew point (Magnus formula) — bonus engineering value
 function dewPoint(t, rh) {
   const a = 17.625, b = 243.04;
   const alpha = Math.log(rh / 100) + (a * t) / (b + t);
   return (b * alpha) / (a - alpha);
 }
 
-// Thresholds (typical server-room comfort envelope, ASHRAE-ish)
+// Thresholds match the anomaly detector defaults (TEMP_MIN=0, TEMP_MAX=50,
+// HUMIDITY_MIN=20, HUMIDITY_MAX=90). "lo/hi" are the comfort band shown on
+// charts; "critLo/critHi" are the detector's hard thresholds.
 const THRESHOLDS = {
-  temp: { lo: 18, hi: 27, critLo: 15, critHi: 30 },
-  humidity: { lo: 30, hi: 60, critLo: 20, critHi: 70 },
+  temp: { lo: 18, hi: 27, critLo: 0, critHi: 50 },
+  humidity: { lo: 30, hi: 60, critLo: 20, critHi: 90 },
 };
 
-// Comfort zones for the scatter plot
 const COMFORT_ZONES = [
   { id: 'optimal', name: 'Optimal',     t: [20, 25], h: [40, 55], color: 'oklch(0.74 0.14 155)' },
   { id: 'accept',  name: 'Acceptable',  t: [18, 27], h: [30, 60], color: 'oklch(0.78 0.14 80)' },
   { id: 'risk',    name: 'At risk',     t: [15, 30], h: [20, 70], color: 'oklch(0.68 0.18 28)' },
 ];
 
-// Single device for now — fleet-ready data structure
-const DEVICES = [
-  {
-    id: 'dht22-01', name: 'DHT22-01',
-    location: 'Server Room A · Rack 3',
-    firmware: 'fw 1.4.2', mcu: 'ESP32-WROOM-32',
-    rssi: -58, battery: null, // mains powered
-    poweredBy: 'PoE',
-    sampleRate: '0.20 Hz (5 min)',
-    uptimeH: 41 * 24 + 7,
-    lastSeenMs: NOW.getTime() - 47 * 1000,
-    status: 'crit', // active humidity alert
-  },
-  // Placeholders showing the multi-device structure (rendered as "pending")
-  { id: 'dht22-02', name: 'DHT22-02', location: 'Server Room B · Rack 1', status: 'pending' },
-  { id: 'dht22-03', name: 'DHT22-03', location: 'Network Closet · 2F',     status: 'pending' },
-];
-
-// Alerts — chronological feed
-const ALERTS = [
-  {
-    id: 'a-1043', sev: 'crit', unack: true,
-    msg: 'Humidity above critical threshold (70 %RH) for 14 min',
-    device: 'dht22-01', rule: 'RH > 70% / 15m',
-    ts: NOW.getTime() - 14 * 60 * 1000,
-  },
-  {
-    id: 'a-1042', sev: 'warn', unack: true,
-    msg: 'Humidity above warning threshold (60 %RH)',
-    device: 'dht22-01', rule: 'RH > 60% / 5m',
-    ts: NOW.getTime() - 47 * 60 * 1000,
-  },
-  {
-    id: 'a-1041', sev: 'info', unack: false,
-    msg: 'Sensor reconnected after 38 s dropout',
-    device: 'dht22-01', rule: 'link',
-    ts: NOW.getTime() - 5.2 * 3600 * 1000,
-  },
-  {
-    id: 'a-1040', sev: 'warn', unack: false,
-    msg: 'Temperature spike +1.6 °C above moving average',
-    device: 'dht22-01', rule: 'Δt > 1.5°C / 10m',
-    ts: NOW.getTime() - 23 * 3600 * 1000,
-  },
-  {
-    id: 'a-1039', sev: 'ok', unack: false,
-    msg: 'Calibration check passed (RH offset -0.3%)',
-    device: 'dht22-01', rule: 'maintenance',
-    ts: NOW.getTime() - 2 * 86400 * 1000,
-  },
-  {
-    id: 'a-1038', sev: 'info', unack: false,
-    msg: 'Firmware updated to 1.4.2',
-    device: 'dht22-01', rule: 'OTA',
-    ts: NOW.getTime() - 4 * 86400 * 1000,
-  },
-];
-
-// Export to global scope
 Object.assign(window, {
-  FULL_SERIES, clampSeries, downsample, stats,
+  loadData, clampSeries, downsample, stats,
   formatNum, formatRelative, formatClock, formatDate, formatDateTime,
-  dewPoint, THRESHOLDS, COMFORT_ZONES, DEVICES, ALERTS, NOW,
+  dewPoint, THRESHOLDS, COMFORT_ZONES,
 });

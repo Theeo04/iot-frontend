@@ -22,7 +22,8 @@ function App() {
   }, [tw.theme, tw.density]);
 
   // ── Data state ───────────────────────────────
-  const [activeDeviceId, setActiveDeviceId] = useState(DEVICES[0].id);
+  const firstActive = DEVICES.find(d => d.status !== 'pending') || DEVICES[0];
+  const [activeDeviceId, setActiveDeviceId] = useState(firstActive.id);
   const [rangeKey, setRangeKey] = useState('24h');
   const [showTemp, setShowTemp] = useState(true);
   const [showHum, setShowHum] = useState(true);
@@ -41,7 +42,9 @@ function App() {
   }, [rangeKey]);
 
   const live = useMemo(() => {
-    const base = FULL_SERIES[FULL_SERIES.length - 1];
+    const base = FULL_SERIES.length
+      ? FULL_SERIES[FULL_SERIES.length - 1]
+      : { t: NOW.getTime(), temp: 0, humidity: 0 };
     const jitter = (Math.sin(tick / 3) + Math.cos(tick / 1.7)) * 0.15;
     return {
       t: NOW.getTime() + tick * 4000,
@@ -51,13 +54,12 @@ function App() {
   }, [tick]);
 
   // 60-min sparkline window for hero cards
-  const sparkData = useMemo(() => {
-    const last = FULL_SERIES.slice(-12 * 1); // 60 min @ 5 min
-    return last;
-  }, []);
+  const sparkData = useMemo(() => FULL_SERIES.slice(-12), []);
 
   // 60-min ago value for delta
-  const sixtyMinAgo = FULL_SERIES[FULL_SERIES.length - 12];
+  const sixtyMinAgo = FULL_SERIES.length >= 12
+    ? FULL_SERIES[FULL_SERIES.length - 12]
+    : (FULL_SERIES[0] || { temp: 0, humidity: 0 });
 
   // ── Alerts state (allow ACK) ─────────────────
   const [alerts, setAlerts] = useState(ALERTS);
@@ -74,10 +76,12 @@ function App() {
   }
 
   // ── Active device & trend computation ────────
-  const device = DEVICES.find(d => d.id === activeDeviceId);
+  const device = DEVICES.find(d => d.id === activeDeviceId) || DEVICES[0];
   const recent = FULL_SERIES.slice(-12);
-  const tempSlope = (recent[recent.length - 1].temp - recent[0].temp);
-  const humSlope = (recent[recent.length - 1].humidity - recent[0].humidity);
+  const tempSlope = recent.length
+    ? (recent[recent.length - 1].temp - recent[0].temp) : 0;
+  const humSlope = recent.length
+    ? (recent[recent.length - 1].humidity - recent[0].humidity) : 0;
 
   return (
     <>
@@ -103,7 +107,9 @@ function App() {
         <div className="topbar-spacer" />
         <span className="conn-pill">
           <span className="conn-dot" />
-          MQTT · connected · {formatRelative(device.lastSeenMs)}
+          {device.lastSeenMs
+            ? `Postgres · connected · ${formatRelative(device.lastSeenMs)}`
+            : 'Postgres · no data yet'}
         </span>
         <button className="btn"><Icon name="refresh" /> Refresh</button>
         <button className="btn primary"><Icon name="download" /> Export</button>
@@ -291,4 +297,5 @@ function App() {
   );
 }
 
-ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+// ReactDOM.createRoot is now called from bootstrap.jsx after loadData().
+window.App = App;
